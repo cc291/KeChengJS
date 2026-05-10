@@ -5,11 +5,8 @@ import json
 import os
 import re
 import time
-from datetime import datetime, timedelta
 from typing import Any, List
-from urllib.parse import parse_qs, urlparse
 
-import pymysql
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -96,7 +93,6 @@ footer {
 .login-card h3 {
   color: #111111 !important;
   font-weight: 700 !important;
-  /* 移除 font-size: 1.6rem !important; */
   text-shadow: 0 1px 2px rgba(0,0,0,0.05);
 }
 
@@ -115,7 +111,7 @@ footer {
   text-shadow: 0 1px 0 rgba(0,0,0,0.02);
 }
 
-/* 输入框文字：黑底白字？改为浅灰底黑字，确保看清 */
+/* 输入框文字：改为浅灰底黑字，确保看清 */
 .login-card input,
 .login-card textarea {
   color: #000000 !important;
@@ -182,80 +178,6 @@ footer {
         """,
         unsafe_allow_html=True,
     )
-
-MYSQL_URL = (os.environ.get("MYSQL_URL") or "").strip()
-if not MYSQL_URL:
-    st.error("系统未检测到 MySQL 连接串，请在 .env 中配置 MYSQL_URL")
-    st.stop()
-
-PHONE_REGEX = re.compile(r"^1[3-9]\d{9}$")
-PASSWORD_REGEX = re.compile(
-    r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).{8,}$"
-)
-MAX_LOGIN_ATTEMPTS = 5
-LOCK_MINUTES = 15
-
-
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
-
-
-def parse_mysql_url(mysql_url: str) -> dict[str, Any]:
-    parsed = urlparse(mysql_url)
-    if parsed.scheme not in {"mysql", "mysql+pymysql"}:
-        raise ValueError("MYSQL_URL 协议必须是 mysql:// 或 mysql+pymysql://")
-    query = parse_qs(parsed.query)
-    return {
-        "host": parsed.hostname or "127.0.0.1",
-        "port": parsed.port or 3306,
-        "user": parsed.username or "",
-        "password": parsed.password or "",
-        "database": (parsed.path or "").lstrip("/"),
-        "charset": query.get("charset", ["utf8mb4"])[0],
-        "autocommit": False,
-    }
-
-
-def get_db_conn() -> pymysql.connections.Connection:
-    config = parse_mysql_url(MYSQL_URL)
-    return pymysql.connect(**config, cursorclass=pymysql.cursors.DictCursor)
-
-
-def init_auth_db() -> None:
-    conn = get_db_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                username VARCHAR(64) UNIQUE NOT NULL,
-                password_hash VARCHAR(128) NOT NULL,
-                display_name VARCHAR(64) NOT NULL,
-                failed_attempts INT NOT NULL DEFAULT 0,
-                locked_until DATETIME NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-            )
-            # 初始化默认管理员：admin / 123456Aa!
-            cur.execute("SELECT 1 FROM users WHERE username = %s", ("admin",))
-            if cur.fetchone() is None:
-                cur.execute(
-                    "INSERT INTO users (username, password_hash, display_name) VALUES (%s, %s, %s)",
-                    ("admin", hash_password("123456Aa!"), "管理员老师"),
-                )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def is_valid_phone(username: str) -> bool:
-    return bool(PHONE_REGEX.fullmatch(username))
-
-
-def is_strong_password(password: str) -> bool:
-    return bool(PASSWORD_REGEX.fullmatch(password))
 
 
 def safe_json_extract(text: str) -> dict[str, Any]:
@@ -421,81 +343,19 @@ def switch_page(target: str, message: str) -> None:
 
 
 def check_login(username: str, password: str) -> bool:
-    if not username or not password:
-        return False
-    conn = get_db_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT username, display_name, password_hash, failed_attempts, locked_until FROM users WHERE username = %s",
-                (username,),
-            )
-            row = cur.fetchone()
-            if not row:
-                return False
-
-            now = datetime.now()
-            locked_until = row.get("locked_until")
-            if locked_until and now < locked_until:
-                remain = int((locked_until - now).total_seconds() // 60) + 1
-                st.error(f"账号已被临时锁定，请约 {remain} 分钟后重试。")
-                return False
-
-            if row["password_hash"] != hash_password(password):
-                attempts = int(row.get("failed_attempts", 0)) + 1
-                if attempts >= MAX_LOGIN_ATTEMPTS:
-                    lock_until = now + timedelta(minutes=LOCK_MINUTES)
-                    cur.execute(
-                        "UPDATE users SET failed_attempts = %s, locked_until = %s WHERE username = %s",
-                        (attempts, lock_until, username),
-                    )
-                    conn.commit()
-                    st.error(f"连续登录失败过多，账号已锁定 {LOCK_MINUTES} 分钟。")
-                else:
-                    cur.execute(
-                        "UPDATE users SET failed_attempts = %s WHERE username = %s",
-                        (attempts, username),
-                    )
-                    conn.commit()
-                    st.error(f"账号或密码错误，已失败 {attempts}/{MAX_LOGIN_ATTEMPTS} 次。")
-                return False
-
-            cur.execute(
-                "UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE username = %s",
-                (username,),
-            )
-            conn.commit()
-    finally:
-        conn.close()
-
-    st.session_state.user = {
-        "username": row["username"],
-        "display_name": row["display_name"] or "老师",
-    }
-    return True
+    # 修改为本地硬编码模拟登录，去除数据库依赖
+    if username == "admin" and password == "123456Aa!":
+        st.session_state.user = {
+            "username": "admin",
+            "display_name": "管理员老师",
+        }
+        return True
+    return False
 
 
 def register_user_placeholder(username: str, password: str) -> tuple[bool, str]:
-    if not username or not password:
-        return False, "请输入完整注册信息。"
-    if username != "admin" and not is_valid_phone(username):
-        return False, "账号需为有效手机号（11 位中国大陆手机号）。"
-    if not is_strong_password(password):
-        return False, "密码需至少 8 位，且包含大小写字母、数字和特殊字符。"
-    conn = get_db_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM users WHERE username = %s", (username,))
-            if cur.fetchone() is not None:
-                return False, "该账号已存在，请直接登录。"
-            cur.execute(
-                "INSERT INTO users (username, password_hash, display_name) VALUES (%s, %s, %s)",
-                (username, hash_password(password), "老师"),
-            )
-        conn.commit()
-    finally:
-        conn.close()
-    return True, "注册成功，请使用新账号登录。"
+    # 演示环境关闭真实注册，直接提示引导使用默认账号
+    return False, "演示系统暂不开放注册，请直接使用账号 admin 和密码 123456Aa! 登录。"
 
 
 def reset_for_reupload() -> None:
@@ -534,8 +394,8 @@ def render_login_page() -> None:
 )
 
     with st.form("login_form"):
-        username = st.text_input("教师工号 / 手机号", placeholder="请输入工号或手机号")
-        password = st.text_input("密码", placeholder="请输入密码", type="password")
+        username = st.text_input("教师工号 / 手机号", placeholder="请输入工号或手机号 (演示账号: admin)")
+        password = st.text_input("密码", placeholder="请输入密码 (演示密码: 123456Aa!)", type="password")
         c1, c2 = st.columns(2)
         login_submit = c1.form_submit_button("登录", use_container_width=True)
         register_submit = c2.form_submit_button("注册", use_container_width=True)
@@ -544,7 +404,7 @@ def render_login_page() -> None:
         if check_login(username.strip(), password):
             switch_page("upload", "登录成功，进入资源上传页...")
         else:
-            st.error("账号或密码错误。默认管理员账号：admin / 123456Aa!")
+            st.error("账号或密码错误。演示版默认管理员账号：admin / 密码：123456Aa!")
     if register_submit:
         _, msg = register_user_placeholder(username.strip(), password)
         st.info(msg)
@@ -751,7 +611,6 @@ def render_operation_page(model_name: str) -> None:
 
 init_state()
 inject_global_css()
-init_auth_db()
 
 if st.session_state.page == "login":
     render_login_page()
